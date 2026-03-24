@@ -1,49 +1,48 @@
 """
-BCMC-VRPHD Main Runner
-=======================
+main.py — BCMC-VRPHD Runner
+==============================
 Usage:
-    python main.py --instance data/instances/small_n5_k3.xlsx --n_points 10
+    python main.py --instance data/instances/small_n5_k3.xlsx
     python main.py --all --n_points 10 --time_limit 300
 """
 
 import argparse
-from pathlib import Path
+import os
+import glob
 from src.loader import load_instance
 from src.model import solve_pareto
 from src.export import export_results
 
 
-def run_instance(filepath: str, n_points: int, time_limit: int,
-                 verbose: bool):
-    name = Path(filepath).stem
-    print(f"\n{'='*60}")
-    print(f"  Instance: {name}")
-    print(f"{'='*60}")
-
-    inst = load_instance(filepath)
-    print(f"  Nodes: {inst.n_nodes}, Vehicles: {inst.n_vehicles}")
+def run_instance(path, n_points, time_limit, verbose):
+    """Run a single instance."""
+    print(f"\n{'='*65}")
+    inst = load_instance(path)
+    print(f"  Instance: {inst.name}")
+    print(f"{'='*65}")
+    print(f"  Nodes: {len(inst.V0)}, Vehicles: {len(inst.K)}")
     print(f"  Supply classes: {inst.D}")
     print(f"  AO regions: {inst.G_r}")
     print(f"  Observable: {inst.K_obs}, Unobservable: {inst.K_unobs}")
 
-    frontier = solve_pareto(inst, n_points=n_points,
-                            time_limit=time_limit, verbose=verbose)
+    frontier = solve_pareto(
+        inst, n_points=n_points,
+        time_limit=time_limit, verbose=verbose)
 
     if frontier:
-        export_results(frontier, name)
-        print(f"\n  Pareto frontier: {len(frontier)} points")
-        for sol in frontier:
-            knee = " ★" if sol.get("knee") else ""
-            print(f"    W1={sol['W1']:.2f}  W2={sol['W2']:.4f}"
-                  f"  [{sol['status']}]{knee}")
+        print(f"\n  {len(frontier)} Pareto points found.")
+        export_results(frontier, inst.name)
+        knee = [s for s in frontier if s.get("knee")]
+        if knee:
+            k = knee[0]
+            print(f"  Knee point: W1={k['W1']:.2f}, W2={k['W2']:.4f}")
     else:
-        print("  ✗ No feasible solution found.")
+        print("\n  No feasible solution found.")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="BCMC-VRPHD: Bi-Objective Capacitated Military "
-                    "Convoy VRP with Heterogeneous Demand")
+        description="BCMC-VRPHD Bi-Objective Military Convoy VRP Solver")
     parser.add_argument("--instance", type=str,
                         help="Path to .xlsx instance file")
     parser.add_argument("--all", action="store_true",
@@ -57,17 +56,14 @@ def main():
     args = parser.parse_args()
 
     if args.all:
-        inst_dir = Path("data/instances")
-        files = sorted(inst_dir.glob("*.xlsx"))
-        if not files:
+        paths = sorted(glob.glob("data/instances/*.xlsx"))
+        if not paths:
             print("No instances found. Run: python data/generate_instances.py")
             return
-        for fp in files:
-            run_instance(str(fp), args.n_points, args.time_limit,
-                         args.verbose)
+        for p in paths:
+            run_instance(p, args.n_points, args.time_limit, args.verbose)
     elif args.instance:
-        run_instance(args.instance, args.n_points, args.time_limit,
-                     args.verbose)
+        run_instance(args.instance, args.n_points, args.time_limit, args.verbose)
     else:
         parser.print_help()
 
