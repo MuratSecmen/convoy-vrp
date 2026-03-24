@@ -1,0 +1,37 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Generate Instances",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/data/generate_instances.py",
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "Run Small Instance",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/main.py",
+            "args": ["--instance", "data/instances/small_n5_k3.xlsx",
+                     "--n_points", "5", "--time_limit", "120"],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "Run All Instances",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/main.py",
+            "args": ["--all", "--n_points", "5", "--time_limit", "120"],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "Run Tests",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": ["tests/", "-v"],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}
