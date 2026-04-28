@@ -108,8 +108,14 @@ def _generate(n_nodes, n_vehicles, name):
             dem_rows.append({"node_id": nid, "class": cls, "quantity": 5.0})
     df_dem = pd.DataFrame(dem_rows)
 
-    # -- Regions (G2: all vehicle demand nodes in same region)
+    # -- Regions (AO-compatible via connected components) --------
+    # eq15: each vehicle visits at most 1 region
+    # => ALL nodes a vehicle MIGHT serve must be in the SAME region
+    # Strategy: find groups of vehicles that share nodes (transitively),
+    # assign all their nodes to one region.
     regions = ["RC-Capital"] + [None] * n_nodes
+
+    # Build vehicle -> potential nodes mapping
     veh_nodes = {v: set() for v in veh_ids}
     for _, row in df_dem.iterrows():
         cls = row["class"]
@@ -118,22 +124,40 @@ def _generate(n_nodes, n_vehicles, name):
             if cls in capabilities[v]:
                 veh_nodes[v].add(nid)
 
-    assigned = {}
-    for v in veh_ids:
-        nodes = veh_nodes[v]
-        if not nodes:
-            continue
-        existing = set(assigned[n] for n in nodes if n in assigned)
-        if len(existing) == 1:
-            reg = existing.pop()
-        elif len(existing) == 0:
-            reg = np.random.choice(REGIONS)
-        else:
-            from collections import Counter
-            cnt = Counter(assigned[n] for n in nodes if n in assigned)
-            reg = cnt.most_common(1)[0][0]
+    # Union-Find to group vehicles sharing nodes
+    parent = {v: v for v in veh_ids}
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    # Node -> vehicles mapping
+    node_vehs = {}
+    for v, nodes in veh_nodes.items():
         for n in nodes:
-            assigned[n] = reg
+            node_vehs.setdefault(n, []).append(v)
+    # Union vehicles that share any node
+    for n, vs in node_vehs.items():
+        for i in range(1, len(vs)):
+            union(vs[0], vs[i])
+
+    # Assign one region per component
+    comp_region = {}
+    for v in veh_ids:
+        root = find(v)
+        if root not in comp_region:
+            comp_region[root] = np.random.choice(REGIONS)
+
+    # Assign nodes based on their vehicles' component
+    assigned = {}
+    for n, vs in node_vehs.items():
+        root = find(vs[0])
+        assigned[n] = comp_region[root]
 
     for nid in range(1, n_nodes + 1):
         regions[nid] = assigned.get(nid, np.random.choice(REGIONS))

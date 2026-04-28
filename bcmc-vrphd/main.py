@@ -14,7 +14,7 @@ from src.model import solve_pareto
 from src.export import export_results
 
 
-def run_instance(path, n_points, time_limit, verbose):
+def run_instance(path, n_points, time_limit, verbose, solver_name):
     """Run a single instance."""
     print(f"\n{'='*65}")
     inst = load_instance(path)
@@ -24,10 +24,12 @@ def run_instance(path, n_points, time_limit, verbose):
     print(f"  Supply classes: {inst.D}")
     print(f"  AO regions: {inst.G_r}")
     print(f"  Observable: {inst.K_obs}, Unobservable: {inst.K_unobs}")
+    print(f"  Solver: {solver_name.upper()}")
 
     frontier = solve_pareto(
         inst, n_points=n_points,
-        time_limit=time_limit, verbose=verbose)
+        time_limit=time_limit, verbose=verbose,
+        solver_name=solver_name)
 
     if frontier:
         print(f"\n  {len(frontier)} Pareto points found.")
@@ -51,8 +53,11 @@ def main():
                         help="Number of Pareto frontier points")
     parser.add_argument("--time_limit", type=int, default=300,
                         help="MIP solver time limit per point (seconds)")
+    parser.add_argument("--solver", type=str, default="cbc",
+                        choices=["cbc", "gurobi"],
+                        help="MIP solver: gurobi or cbc (default: cbc)")
     parser.add_argument("--verbose", action="store_true",
-                        help="Show CBC solver output")
+                        help="Show solver output")
     args = parser.parse_args()
 
     if args.all:
@@ -61,9 +66,9 @@ def main():
             print("No instances found. Run: python data/generate_instances.py")
             return
         for p in paths:
-            run_instance(p, args.n_points, args.time_limit, args.verbose)
+            run_instance(p, args.n_points, args.time_limit, args.verbose, args.solver)
     elif args.instance:
-        run_instance(args.instance, args.n_points, args.time_limit, args.verbose)
+        run_instance(args.instance, args.n_points, args.time_limit, args.verbose, args.solver)
     else:
         parser.print_help()
 

@@ -19,6 +19,7 @@ def solve_single(
     epsilon: Optional[float] = None,
     time_limit: int = 300,
     verbose: bool = False,
+    solver_name: str = "cbc",
 ) -> Optional[Dict]:
     """Solve a single epsilon-constraint iteration.
 
@@ -28,8 +29,10 @@ def solve_single(
     epsilon : float or None
         Upper bound on W2.  None = unconstrained (min W1 only).
     time_limit : int
-        CBC time limit in seconds.
+        Solver time limit in seconds.
     verbose : bool
+    solver_name : str
+        "gurobi" or "cbc" (default).
 
     Returns
     -------
@@ -234,8 +237,10 @@ def solve_single(
                     f"eq16_{k}_{g}_{n_g}")
 
     # ── Solve ────────────────────────────────────────────────
-    solver = pulp.PULP_CBC_CMD(
-        timeLimit=time_limit, msg=1 if verbose else 0)
+    if solver_name.lower() == "gurobi":
+        solver = pulp.GUROBI(timeLimit=time_limit, msg=1 if verbose else 0)
+    else:
+        solver = pulp.PULP_CBC_CMD(timeLimit=time_limit, msg=1 if verbose else 0)
     prob.solve(solver)
 
     status = pulp.LpStatus[prob.status]
@@ -291,12 +296,12 @@ def _build_route(arcs, depot=0):
     return route
 
 
-def solve_pareto(inst, n_points=10, time_limit=300, verbose=False):
+def solve_pareto(inst, n_points=10, time_limit=300, verbose=False, solver_name="cbc"):
     """Generate Pareto frontier via epsilon-constraint on W2."""
 
     print(f"  [1/{n_points+1}] Solving min W1 (unconstrained)...")
     sol_ub = solve_single(inst, epsilon=None, time_limit=time_limit,
-                          verbose=verbose)
+                          verbose=verbose, solver_name=solver_name)
     if sol_ub is None:
         print("  \u2717 Infeasible.")
         return []
@@ -307,7 +312,7 @@ def solve_pareto(inst, n_points=10, time_limit=300, verbose=False):
     # Find W2_min via binary search
     W2_min = 0.0
     sol_lb = solve_single(inst, epsilon=0.0, time_limit=time_limit,
-                          verbose=verbose)
+                          verbose=verbose, solver_name=solver_name)
     if sol_lb is not None:
         W2_min = 0.0
     else:
@@ -315,7 +320,8 @@ def solve_pareto(inst, n_points=10, time_limit=300, verbose=False):
         for _ in range(12):
             mid = (lo + hi) / 2
             sol_test = solve_single(inst, epsilon=mid,
-                                    time_limit=max(30, time_limit // 3))
+                                    time_limit=max(30, time_limit // 3),
+                                    solver_name=solver_name)
             if sol_test is not None:
                 hi = mid
             else:
@@ -332,7 +338,7 @@ def solve_pareto(inst, n_points=10, time_limit=300, verbose=False):
         for idx, eps in enumerate(epsilons):
             print(f"  [{idx+2}/{n_points+1}] eps={eps:.4f}...")
             sol = solve_single(inst, epsilon=eps, time_limit=time_limit,
-                               verbose=verbose)
+                               verbose=verbose, solver_name=solver_name)
             if sol is not None:
                 frontier.append(sol)
                 print(f"    W1={sol['W1']:.2f}, W2={sol['W2']:.4f}")
