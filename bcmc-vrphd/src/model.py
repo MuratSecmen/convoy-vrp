@@ -268,10 +268,17 @@ def solve_single(
         if arcs:
             routes[k] = _build_route(arcs, depot=0)
 
-    try:
-        gap = prob.solverModel.bestBound if prob.solverModel else None
-    except Exception:
-        gap = None
+    # PuLP's PULP_CBC_CMD does not retain a native solver model after
+    # solve() (prob.solverModel is always None), so no gap is available
+    # for the default CBC path. Gurobi's wrapper does retain one, and
+    # MIPGap is the actual relative optimality gap (bestBound is just the
+    # bound value, not a gap).
+    gap = None
+    if solver_name.lower() == "gurobi" and prob.solverModel is not None:
+        try:
+            gap = prob.solverModel.MIPGap
+        except Exception:
+            gap = None
 
     return {
         "W1": sol_W1, "W2": sol_W2, "status": status,
