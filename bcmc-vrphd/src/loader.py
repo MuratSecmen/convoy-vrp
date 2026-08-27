@@ -97,6 +97,13 @@ def load_instance(filepath: str) -> Instance:
     # -- Baseline ----------------------------------------------
     df_bl = pd.read_excel(xls, "Baseline")
     L_bar = dict(zip(df_bl["vehicle_id"].astype(int), df_bl["baseline_min"].astype(float)))
+    non_positive = {k: v for k, v in L_bar.items() if v <= 0}
+    if non_positive:
+        raise ValueError(
+            f"Baseline sheet has non-positive baseline_min for vehicle(s) "
+            f"{non_positive} in {filepath}; model.py divides by L_bar[k] "
+            f"in eq6 and requires L_bar[k] > 0."
+        )
 
     # -- Regions -----------------------------------------------
     df_reg = pd.read_excel(xls, "Regions")
