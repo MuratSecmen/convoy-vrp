@@ -96,7 +96,7 @@ cd convoy-vrp/bcmc-vrphd
 pip install -r requirements.txt
 ```
 
-**Solver:** CBC (default, open-source, via PuLP). Gurobi available via `--solver gurobi` — academic license required.
+**Solver:** Gurobi, via the native `gurobipy` API — academic or commercial license required.
 
 ---
 
@@ -108,9 +108,9 @@ cd bcmc-vrphd
 # Generate instances
 python data/generate_instances.py
 
-# Run solver (default: CBC)
+# Run solver
 python main.py --instance data/instances/small_n5_k3.xlsx
-python main.py --instance data/instances/medium_n10_k5.xlsx --solver gurobi
+python main.py --instance data/instances/medium_n10_k5.xlsx --time_limit 600
 ```
 
 ---

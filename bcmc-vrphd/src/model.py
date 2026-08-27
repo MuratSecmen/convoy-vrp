@@ -6,11 +6,12 @@ Bi-Objective Capacitated Military Convoy VRP with Heterogeneous Demand.
 Key design: T^{k,d}_i is class-specific service time (not shared across
 classes) to prevent phantom demand in MCNF flow conservation.
 
-Solver: PuLP with CBC (open-source).
+Solver: Gurobi, via the native gurobipy API.
 """
 
-import pulp
-from typing import Dict, List, Optional, Tuple
+import gurobipy as gp
+from gurobipy import GRB
+from typing import Dict, Optional
 from src.loader import Instance
 
 
@@ -19,7 +20,6 @@ def solve_single(
     epsilon: Optional[float] = None,
     time_limit: int = 300,
     verbose: bool = False,
-    solver_name: str = "cbc",
 ) -> Optional[Dict]:
     """Solve a single epsilon-constraint iteration.
 
@@ -31,8 +31,6 @@ def solve_single(
     time_limit : int
         Solver time limit in seconds.
     verbose : bool
-    solver_name : str
-        "gurobi" or "cbc" (default).
 
     Returns
     -------
@@ -42,79 +40,79 @@ def solve_single(
     V, V0, K, D = inst.V, inst.V0, inst.K, inst.D
     E = inst.E
 
-    prob = pulp.LpProblem("BCMC_VRPHD", pulp.LpMinimize)
+    m = gp.Model("BCMC_VRPHD")
+    m.Params.OutputFlag = 1 if verbose else 0
+    m.Params.TimeLimit = time_limit
 
     # ── Decision variables ───────────────────────────────────
 
     # x[i,j,k] in {0,1}: vehicle k traverses arc (i,j)
-    x = pulp.LpVariable.dicts(
-        "x", [(i, j, k) for (i, j) in E for k in K], cat="Binary")
+    x = m.addVars(
+        [(i, j, k) for (i, j) in E for k in K], vtype=GRB.BINARY, name="x")
 
     # A[k,g] in {0,1}: vehicle k assigned to region g
-    A = pulp.LpVariable.dicts(
-        "A", [(k, g) for k in K for g in inst.G_r], cat="Binary")
+    A = m.addVars(
+        [(k, g) for k in K for g in inst.G_r], vtype=GRB.BINARY, name="A")
 
     # f[i,j,k,d] >= 0: MCNF flow of class d by vehicle k on arc (i,j)
-    f = {}
-    for (i, j) in E:
-        for k in K:
-            for d in D:
-                if k in inst.K_d.get(d, []):
-                    f[(i, j, k, d)] = pulp.LpVariable(
-                        f"f_{i}_{j}_{k}_{d}", lowBound=0)
+    f_keys = [
+        (i, j, k, d)
+        for (i, j) in E for k in K for d in D
+        if k in inst.K_d.get(d, [])]
+    f = m.addVars(f_keys, lb=0.0, vtype=GRB.CONTINUOUS, name="f")
 
     # T[k,d,i] >= 0: class-specific service time
     # CRITICAL FIX: T is indexed by (k, d, i) not (k, i)
     # This prevents phantom demand when vehicle k visits node i
     # for class d1 but node i does not need class d2.
-    T = {}
-    for k in K:
-        for d in D:
-            if k in inst.K_d.get(d, []):
-                for i in V0:
-                    T[(k, d, i)] = pulp.LpVariable(
-                        f"T_{k}_{d}_{i}", lowBound=0)
+    T_keys = [
+        (k, d, i)
+        for k in K for d in D if k in inst.K_d.get(d, [])
+        for i in V0]
+    T = m.addVars(T_keys, lb=0.0, vtype=GRB.CONTINUOUS, name="T")
 
     # L[k] >= 0: actual travel time of vehicle k
-    L = pulp.LpVariable.dicts("L", K, lowBound=0)
+    L = m.addVars(K, lb=0.0, vtype=GRB.CONTINUOUS, name="L")
 
     # W1, W2 >= 0: min-max auxiliary objectives
-    W1 = pulp.LpVariable("W1", lowBound=0)
-    W2 = pulp.LpVariable("W2", lowBound=0)
+    W1 = m.addVar(lb=0.0, vtype=GRB.CONTINUOUS, name="W1")
+    W2 = m.addVar(lb=0.0, vtype=GRB.CONTINUOUS, name="W2")
 
     # ── Objective (eq1): min W1 ──────────────────────────────
-    prob += W1, "minimize_W1"
+    m.setObjective(W1, GRB.MINIMIZE)
 
     # ── eq3: W1 >= L_k ───────────────────────────────────────
     for k in K:
-        prob += W1 >= L[k], f"eq3_{k}"
+        m.addConstr(W1 >= L[k], name=f"eq3_{k}")
 
     # ── eq4: L_k definition (open-tour: j != 0 excludes return)
     for k in K:
-        travel_sum = pulp.lpSum(
-            inst.p.get((i, j, k), 0) / inst.s[k] * x[(i, j, k)]
+        travel_sum = gp.quicksum(
+            inst.p.get((i, j, k), 0) / inst.s[k] * x[i, j, k]
             for (i, j) in E if j != 0
             if (i, j, k) in x)
         # Sum T over ALL classes and ALL nodes for this vehicle
-        service_sum = pulp.lpSum(
-            T[(k, d, i)]
+        service_sum = gp.quicksum(
+            T[k, d, i]
             for d in D for i in V0
             if (k, d, i) in T)
-        prob += L[k] == travel_sum + service_sum, f"eq4_{k}"
+        m.addConstr(L[k] == travel_sum + service_sum, name=f"eq4_{k}")
 
     # ── eq5: early arrival prohibition ───────────────────────
     for k in K:
-        prob += L[k] >= inst.L_bar[k], f"eq5_{k}"
+        m.addConstr(L[k] >= inst.L_bar[k], name=f"eq5_{k}")
 
     # ── eq6: W2 >= (L_k - L_bar_k) / L_bar_k ────────────────
+    # inst.L_bar[k] is validated > 0 by the loader, so this scalar
+    # division is safe.
     for k in K:
-        prob += (
+        m.addConstr(
             W2 >= (L[k] - inst.L_bar[k]) / inst.L_bar[k],
-            f"eq6_{k}")
+            name=f"eq6_{k}")
 
     # ── epsilon-constraint on W2 ─────────────────────────────
     if epsilon is not None:
-        prob += W2 <= epsilon, "eps_W2"
+        m.addConstr(W2 <= epsilon, name="eps_W2")
 
     # ── eq7: demand satisfaction (split delivery) ────────────
     for d in D:
@@ -123,48 +121,49 @@ def solve_single(
             if qi <= 0:
                 continue
             capable = inst.K_d.get(d, [])
-            prob += (
-                pulp.lpSum(
-                    inst.r.get((k, d), 0) / qi * T[(k, d, i)]
+            m.addConstr(
+                gp.quicksum(
+                    inst.r.get((k, d), 0) / qi * T[k, d, i]
                     for k in capable if (k, d, i) in T
                 ) >= 1,
-                f"eq7_{d}_{i}")
+                name=f"eq7_{d}_{i}")
 
     # ── eq8: MCNF depot capacity ─────────────────────────────
     for k in K:
         flow_from_depot = [
-            f[(0, j, k, d)]
+            f[0, j, k, d]
             for d in D for j in V0
             if (0, j, k, d) in f]
         if flow_from_depot:
-            prob += pulp.lpSum(flow_from_depot) <= inst.C[k], f"eq8_{k}"
+            m.addConstr(
+                gp.quicksum(flow_from_depot) <= inst.C[k], name=f"eq8_{k}")
 
     # ── eq9: single departure ────────────────────────────────
     for k in K:
-        prob += (
-            pulp.lpSum(x[(0, j, k)] for j in V0 if (0, j, k) in x) <= 1,
-            f"eq9_{k}")
+        m.addConstr(
+            gp.quicksum(x[0, j, k] for j in V0 if (0, j, k) in x) <= 1,
+            name=f"eq9_{k}")
 
     # ── eq10: flow conservation ──────────────────────────────
     for k in K:
         for j in V:
-            inflow = pulp.lpSum(
-                x[(i, j, k)] for i in V if i != j and (i, j, k) in x)
-            outflow = pulp.lpSum(
-                x[(j, i, k)] for i in V if i != j and (j, i, k) in x)
-            prob += inflow == outflow, f"eq10_{k}_{j}"
+            inflow = gp.quicksum(
+                x[i, j, k] for i in V if i != j and (i, j, k) in x)
+            outflow = gp.quicksum(
+                x[j, i, k] for i in V if i != j and (j, i, k) in x)
+            m.addConstr(inflow == outflow, name=f"eq10_{k}_{j}")
 
     # ── eq11: MCNF depot source balance ──────────────────────
     for k in K:
         for d in D:
             if k not in inst.K_d.get(d, []):
                 continue
-            depot_out = pulp.lpSum(
-                f[(0, j, k, d)] for j in V0 if (0, j, k, d) in f)
-            total_delivered = pulp.lpSum(
-                inst.r.get((k, d), 0) * T[(k, d, i)]
+            depot_out = gp.quicksum(
+                f[0, j, k, d] for j in V0 if (0, j, k, d) in f)
+            total_delivered = gp.quicksum(
+                inst.r.get((k, d), 0) * T[k, d, i]
                 for i in V0 if (k, d, i) in T)
-            prob += depot_out == total_delivered, f"eq11_{k}_{d}"
+            m.addConstr(depot_out == total_delivered, name=f"eq11_{k}_{d}")
 
     # ── eq12: MCNF node flow conservation ────────────────────
     for k in K:
@@ -172,16 +171,16 @@ def solve_single(
             if k not in inst.K_d.get(d, []):
                 continue
             for i in V0:
-                inflow_d = pulp.lpSum(
-                    f[(j, i, k, d)] for j in V if j != i
+                inflow_d = gp.quicksum(
+                    f[j, i, k, d] for j in V if j != i
                     and (j, i, k, d) in f)
-                outflow_d = pulp.lpSum(
-                    f[(i, j, k, d)] for j in V if j != i
+                outflow_d = gp.quicksum(
+                    f[i, j, k, d] for j in V if j != i
                     and (i, j, k, d) in f)
-                delivered = inst.r.get((k, d), 0) * T[(k, d, i)]
-                prob += (
+                delivered = inst.r.get((k, d), 0) * T[k, d, i]
+                m.addConstr(
                     inflow_d - outflow_d == delivered,
-                    f"eq12_{k}_{d}_{i}")
+                    name=f"eq12_{k}_{d}_{i}")
 
     # ── eq13: MCNF flow-routing coupling ─────────────────────
     for k in K:
@@ -191,9 +190,9 @@ def solve_single(
             for (i, j) in E:
                 key = (i, j, k, d)
                 if key in f:
-                    prob += (
-                        f[key] <= inst.C[k] * x[(i, j, k)],
-                        f"eq13_{i}_{j}_{k}_{d}")
+                    m.addConstr(
+                        f[key] <= inst.C[k] * x[i, j, k],
+                        name=f"eq13_{i}_{j}_{k}_{d}")
 
     # ── eq14: route-service link ─────────────────────────────
     # Only for (k, d, j) where node j demands class d from vehicle k
@@ -210,18 +209,18 @@ def solve_single(
                     continue
                 if (k, d, j) not in T:
                     continue
-                visits = pulp.lpSum(
-                    x[(i, j, k)]
+                visits = gp.quicksum(
+                    x[i, j, k]
                     for i in V if i != j and (i, j, k) in x)
-                prob += (
-                    T[(k, d, j)] <= (qi / rd) * visits,
-                    f"eq14_{k}_{d}_{j}")
+                m.addConstr(
+                    T[k, d, j] <= (qi / rd) * visits,
+                    name=f"eq14_{k}_{d}_{j}")
 
     # ── eq15: region exclusivity ─────────────────────────────
     for k in K:
-        prob += (
-            pulp.lpSum(A[(k, g)] for g in inst.G_r) <= 1,
-            f"eq15_{k}")
+        m.addConstr(
+            gp.quicksum(A[k, g] for g in inst.G_r) <= 1,
+            name=f"eq15_{k}")
 
     # ── eq16: AO arc restriction ─────────────────────────────
     for k in K:
@@ -229,56 +228,42 @@ def solve_single(
             for n_g in inst.V_g.get(g, []):
                 if n_g == 0:
                     continue
-                prob += (
-                    pulp.lpSum(
-                        x[(i, n_g, k)]
+                m.addConstr(
+                    gp.quicksum(
+                        x[i, n_g, k]
                         for i in V if i != n_g and (i, n_g, k) in x
-                    ) <= A[(k, g)],
-                    f"eq16_{k}_{g}_{n_g}")
+                    ) <= A[k, g],
+                    name=f"eq16_{k}_{g}_{n_g}")
 
     # ── Solve ────────────────────────────────────────────────
-    if solver_name.lower() == "gurobi":
-        solver = pulp.GUROBI(timeLimit=time_limit, msg=1 if verbose else 0)
-    else:
-        solver = pulp.PULP_CBC_CMD(timeLimit=time_limit, msg=1 if verbose else 0)
-    prob.solve(solver)
+    m.optimize()
 
-    status = pulp.LpStatus[prob.status]
-    if status not in ("Optimal", "Feasible"):
+    if m.SolCount == 0:
         return None
 
     # ── Extract solution ─────────────────────────────────────
-    sol_W1 = pulp.value(W1)
-    sol_W2 = pulp.value(W2)
-    sol_L = {k: pulp.value(L[k]) for k in K}
+    sol_W1 = W1.X
+    sol_W2 = W2.X
+    sol_L = {k: L[k].X for k in K}
 
     # Aggregate T per vehicle per node (sum over classes)
     sol_T = {}
     for k in K:
         for i in V0:
             total_t = sum(
-                pulp.value(T[(k, d, i)]) or 0
+                T[k, d, i].X
                 for d in D if (k, d, i) in T)
             sol_T[(k, i)] = total_t
 
     routes = {}
     for k in K:
         arcs = [(i, j) for (i, j) in E
-                if (i, j, k) in x and (pulp.value(x[(i, j, k)]) or 0) > 0.5]
+                if (i, j, k) in x and x[i, j, k].X > 0.5]
         if arcs:
             routes[k] = _build_route(arcs, depot=0)
 
-    # PuLP's PULP_CBC_CMD does not retain a native solver model after
-    # solve() (prob.solverModel is always None), so no gap is available
-    # for the default CBC path. Gurobi's wrapper does retain one, and
-    # MIPGap is the actual relative optimality gap (bestBound is just the
-    # bound value, not a gap).
-    gap = None
-    if solver_name.lower() == "gurobi" and prob.solverModel is not None:
-        try:
-            gap = prob.solverModel.MIPGap
-        except Exception:
-            gap = None
+    status = "Optimal" if m.Status == GRB.OPTIMAL else "Feasible"
+    gap = m.MIPGap
 
     return {
         "W1": sol_W1, "W2": sol_W2, "status": status,
@@ -303,14 +288,14 @@ def _build_route(arcs, depot=0):
     return route
 
 
-def solve_pareto(inst, n_points=10, time_limit=300, verbose=False, solver_name="cbc"):
+def solve_pareto(inst, n_points=10, time_limit=300, verbose=False):
     """Generate Pareto frontier via epsilon-constraint on W2."""
 
     print(f"  [1/{n_points+1}] Solving min W1 (unconstrained)...")
     sol_ub = solve_single(inst, epsilon=None, time_limit=time_limit,
-                          verbose=verbose, solver_name=solver_name)
+                          verbose=verbose)
     if sol_ub is None:
-        print("  \u2717 Infeasible.")
+        print("  ✗ Infeasible.")
         return []
 
     W2_max = sol_ub["W2"]
@@ -319,7 +304,7 @@ def solve_pareto(inst, n_points=10, time_limit=300, verbose=False, solver_name="
     # Find W2_min via binary search
     W2_min = 0.0
     sol_lb = solve_single(inst, epsilon=0.0, time_limit=time_limit,
-                          verbose=verbose, solver_name=solver_name)
+                          verbose=verbose)
     if sol_lb is not None:
         W2_min = 0.0
     else:
@@ -327,8 +312,7 @@ def solve_pareto(inst, n_points=10, time_limit=300, verbose=False, solver_name="
         for _ in range(12):
             mid = (lo + hi) / 2
             sol_test = solve_single(inst, epsilon=mid,
-                                    time_limit=max(30, time_limit // 3),
-                                    solver_name=solver_name)
+                                    time_limit=max(30, time_limit // 3))
             if sol_test is not None:
                 hi = mid
             else:
@@ -345,7 +329,7 @@ def solve_pareto(inst, n_points=10, time_limit=300, verbose=False, solver_name="
         for idx, eps in enumerate(epsilons):
             print(f"  [{idx+2}/{n_points+1}] eps={eps:.4f}...")
             sol = solve_single(inst, epsilon=eps, time_limit=time_limit,
-                               verbose=verbose, solver_name=solver_name)
+                               verbose=verbose)
             if sol is not None:
                 frontier.append(sol)
                 print(f"    W1={sol['W1']:.2f}, W2={sol['W2']:.4f}")
