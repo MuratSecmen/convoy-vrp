@@ -32,7 +32,7 @@ Both models share the following structural features:
 
 ```
 convoy-vrp/
-├── bcmc-vrphd/
+├── bcmc-vrphd/                  # Deterministic model
 │   ├── src/
 │   │   ├── model.py
 │   │   ├── loader.py
@@ -42,8 +42,16 @@ convoy-vrp/
 │   │   └── instances/
 │   ├── tests/
 │   ├── main.py
-│   ├── requirements.txt
-│   └── README.md
+│   └── requirements.txt
+├── s-bcmc-vrphd/                # Two-stage stochastic extension
+│   ├── src/
+│   │   ├── loader.py            # same Instance schema as bcmc-vrphd
+│   │   ├── scenarios.py         # six ISAF-calibrated disruption scenarios
+│   │   ├── model.py             # RP / EV / EEV / WS, VSS + EVPI
+│   │   └── export.py
+│   ├── tests/
+│   ├── main.py
+│   └── requirements.txt
 ├── .gitignore
 └── requirements.txt
 ```
@@ -63,12 +71,38 @@ Key constraints: vehicle capacity per supply class, MCNF-based subtour eliminati
 
 ### S-BCMC-VRPHD (Two-Stage Stochastic)
 
-Classified as a **Two-Stage Stochastic Multi-Objective Linear Program (TSSMOLP)** following Gutjahr & Pichler (2016).
+Lives in `s-bcmc-vrphd/`, a separate CLI tool that reuses `bcmc-vrphd`'s
+instance schema and constraint set. Classified as a **Two-Stage
+Stochastic Multi-Objective Linear Program (TSSMOLP)** following Gutjahr
+& Pichler (2016).
 
-- **Stage 1 (here-and-now):** Routing decisions before scenario realization; non-anticipativity constraints enforced
-- **Stage 2 (recourse):** Per-scenario delivery adjustments under arc blockages and congestion
+- **Stage 1 (here-and-now):** the AO **region assignment** `A[k,g]` —
+  which operational area each convoy is committed to — is fixed before
+  the disruption scenario is known (non-anticipativity).
+- **Stage 2 (recourse):** everything downstream of "which roads are open
+  today" — the actual route `x`, deliveries `f`/`T`, `L`, `W1`, `W2` — is
+  re-optimized per scenario, but a vehicle can never route outside the
+  AO region it was committed to in Stage 1. Demand a scenario makes
+  physically unreachable is absorbed by a penalized `Shortfall` slack
+  rather than making the model infeasible.
 
-Performance metrics: **VSS** and **EVPI**, adapted for the min-max bi-objective context.
+**Six disruption scenarios**, S0 (baseline, no disruption) through S5
+(severe route collapse), each defined by a blocked-arc fraction and a
+travel-time congestion multiplier, with probability decreasing as
+severity increases. These are **illustrative, not fitted to a published
+per-route probability table** — no such tactical-level dataset is
+public. The scenario *shape* (a common low-severity mode, a thin
+high-severity tail) is grounded in documented trends from the campaign
+(IED incidents up ~75% 2009→2010, device power increasing over time,
+convoys routinely detouring around suspect road damage rather than
+outright losing the road) — see `s-bcmc-vrphd/src/scenarios.py` for the
+exact numbers, the sourcing, and how to replace them with real data.
+
+Performance metrics: **VSS** (value of the stochastic solution vs. the
+expected-value/mean-scenario plan) and **EVPI** (value of perfect
+information vs. having to commit to a region assignment in advance),
+both computed by solving the same recourse problem under a fixed vs. a
+free first-stage decision — see `s-bcmc-vrphd/src/model.py`.
 
 IED/ambush threats are modeled as **exogenous stochastic parameters**, not as rational adversaries — deliberately distinguishing this work from Network Interdiction / Stackelberg game models (Wood, 1993; Israeli & Wood, 2002).
 
@@ -102,6 +136,8 @@ pip install -r requirements.txt
 
 ## Usage
 
+### Deterministic (BCMC-VRPHD)
+
 ```bash
 cd bcmc-vrphd
 
@@ -112,6 +148,24 @@ python data/generate_instances.py
 python main.py --instance data/instances/small_n5_k3.xlsx
 python main.py --instance data/instances/medium_n10_k5.xlsx --time_limit 600
 ```
+
+### Two-Stage Stochastic (S-BCMC-VRPHD)
+
+Reuses `bcmc-vrphd`'s generated instances directly (same Excel schema):
+
+```bash
+cd s-bcmc-vrphd
+pip install -r requirements.txt
+
+python main.py --instance ../bcmc-vrphd/data/instances/small_n5_k3.xlsx
+```
+
+Solves RP (the full two-stage stochastic program), then EV → EEV and WS,
+and reports VSS and EVPI. Note: the RP model builds all six scenarios'
+worth of variables into **one** Gurobi model at once, so it is
+substantially larger than the deterministic model on the same instance —
+`medium_n10_k5` and `large_n15_k7` need a full (non size-limited) Gurobi
+license.
 
 ---
 
